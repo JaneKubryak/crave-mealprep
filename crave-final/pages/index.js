@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 
 const GOALS = { calories: 1600, protein: 114, carbs: 120, fat: 55 }
@@ -37,7 +37,7 @@ function MacroRing({ value, max, color, label, size = 80 }) {
 }
 
 function LogMealModal({ recipes, onClose, onLogged }) {
-  const [mode, setMode] = useState('recipe') // recipe | quick
+  const [mode, setMode] = useState('recipe') // recipe | quick | ai
   const [selectedRecipe, setSelectedRecipe] = useState(null)
   const [servings, setServings] = useState(1)
   const [quickName, setQuickName] = useState('')
@@ -45,7 +45,60 @@ function LogMealModal({ recipes, onClose, onLogged }) {
   const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
 
+  // AI analyze state
+  const fileInputRef = useRef(null)
+  const [imagePreview, setImagePreview] = useState(null)
+  const [imageData, setImageData] = useState(null)
+  const [imageMediaType, setImageMediaType] = useState(null)
+  const [aiText, setAiText] = useState('')
+  const [analyzing, setAnalyzing] = useState(false)
+  const [aiResult, setAiResult] = useState(null)
+  const [aiError, setAiError] = useState('')
+  const [editedMacros, setEditedMacros] = useState({ meal_name: '', calories: '', protein: '', carbs: '', fat: '' })
+
   const filtered = recipes.filter(r => r.name.toLowerCase().includes(search.toLowerCase()))
+
+  function handleImageSelect(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const dataUrl = ev.target.result
+      setImagePreview(dataUrl)
+      setImageMediaType(file.type || 'image/jpeg')
+      // Strip the data URL prefix to get raw base64
+      setImageData(dataUrl.split(',')[1])
+    }
+    reader.readAsDataURL(file)
+  }
+
+  async function analyzeFood() {
+    if (!imageData && !aiText.trim()) return
+    setAnalyzing(true)
+    setAiError('')
+    setAiResult(null)
+    try {
+      const res = await fetch('/api/analyze-food', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: imageData, mediaType: imageMediaType, text: aiText.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Analysis failed')
+      setAiResult(data)
+      setEditedMacros({
+        meal_name: data.meal_name,
+        calories: String(data.calories),
+        protein: String(data.protein),
+        carbs: String(data.carbs),
+        fat: String(data.fat),
+      })
+    } catch (err) {
+      setAiError(err.message)
+    } finally {
+      setAnalyzing(false)
+    }
+  }
 
   async function logMeal() {
     setSaving(true)
@@ -60,6 +113,17 @@ function LogMealModal({ recipes, onClose, onLogged }) {
         carbs: selectedRecipe.carbs_per_serving * servings,
         fat: selectedRecipe.fat_per_serving * servings,
         source: 'recipe',
+      }
+    } else if (mode === 'ai' && aiResult) {
+      payload = {
+        meal_name: editedMacros.meal_name || aiResult.meal_name,
+        servings: 1,
+        calories: +editedMacros.calories || 0,
+        protein: +editedMacros.protein || 0,
+        carbs: +editedMacros.carbs || 0,
+        fat: +editedMacros.fat || 0,
+        source: 'ai',
+        notes: aiResult.notes || '',
       }
     } else {
       payload = {
@@ -83,11 +147,15 @@ function LogMealModal({ recipes, onClose, onLogged }) {
     onClose()
   }
 
-  const canLog = mode === 'recipe' ? !!selectedRecipe : (quickName && quickMacros.calories)
+  const canLog = mode === 'recipe'
+    ? !!selectedRecipe
+    : mode === 'ai'
+      ? !!aiResult
+      : (quickName && quickMacros.calories)
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#000000cc', zIndex: 50, display: 'flex', alignItems: 'flex-end' }}>
-      <div style={{ background: C.card, borderRadius: '20px 20px 0 0', width: '100%', maxHeight: '85vh', overflowY: 'auto', padding: '20px 16px 40px' }}>
+      <div style={{ background: C.card, borderRadius: '20px 20px 0 0', width: '100%', maxHeight: '90vh', overflowY: 'auto', padding: '20px 16px 40px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <h2 style={{ fontSize: 18, fontWeight: 800 }}>Log a Meal</h2>
           <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: C.muted, fontSize: 22 }}>×</button>
@@ -95,11 +163,11 @@ function LogMealModal({ recipes, onClose, onLogged }) {
 
         {/* Mode toggle */}
         <div style={{ display: 'flex', gap: 4, background: '#080b12', borderRadius: 10, padding: 4, marginBottom: 16 }}>
-          {[['recipe', '📖 From Recipe'], ['quick', '✏️ Quick Entry']].map(([id, label]) => (
+          {[['recipe', '📖 Recipe'], ['ai', '📸 AI Analyze'], ['quick', '✏️ Quick']].map(([id, label]) => (
             <button key={id} onClick={() => setMode(id)} style={{
               flex: 1, padding: '8px 0', borderRadius: 8, border: 'none',
               background: mode === id ? C.border : 'transparent',
-              color: mode === id ? C.text : C.muted, fontSize: 13, fontWeight: mode === id ? 700 : 400
+              color: mode === id ? C.text : C.muted, fontSize: 12, fontWeight: mode === id ? 700 : 400
             }}>{label}</button>
           ))}
         </div>
@@ -144,6 +212,111 @@ function LogMealModal({ recipes, onClose, onLogged }) {
                     <div style={{ fontSize: 11, color: C.sub }}>{(selectedRecipe.carbs_per_serving * servings).toFixed(1)}g C · {(selectedRecipe.protein_per_serving * servings).toFixed(1)}g P</div>
                   </div>
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {mode === 'ai' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Image upload area */}
+            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleImageSelect} />
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                border: `2px dashed ${imagePreview ? '#3b82f6' : C.border}`,
+                borderRadius: 14, minHeight: 140, display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                background: '#080b12', overflow: 'hidden', position: 'relative',
+              }}
+            >
+              {imagePreview ? (
+                <img src={imagePreview} alt="food" style={{ width: '100%', maxHeight: 200, objectFit: 'cover', borderRadius: 12 }} />
+              ) : (
+                <>
+                  <div style={{ fontSize: 32, marginBottom: 6 }}>📷</div>
+                  <div style={{ fontSize: 13, color: C.sub }}>Tap to add a food photo</div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>optional — text description also works</div>
+                </>
+              )}
+            </div>
+
+            {imagePreview && (
+              <button onClick={() => { setImagePreview(null); setImageData(null); setAiResult(null); setAiError('') }}
+                style={{ alignSelf: 'flex-start', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted, fontSize: 12, padding: '4px 10px' }}>
+                Remove photo
+              </button>
+            )}
+
+            {/* Text description */}
+            <div>
+              <div style={{ fontSize: 11, color: C.sub, marginBottom: 4 }}>Description (optional)</div>
+              <input
+                placeholder="e.g. grilled chicken breast with rice, 200g chicken"
+                value={aiText}
+                onChange={e => setAiText(e.target.value)}
+                style={{ width: '100%', background: '#080b12', border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px 14px', color: C.text, fontSize: 14 }}
+              />
+            </div>
+
+            {/* Analyze button */}
+            {!aiResult && (
+              <button
+                onClick={analyzeFood}
+                disabled={analyzing || (!imageData && !aiText.trim())}
+                style={{
+                  padding: '12px 0', borderRadius: 12, border: 'none', fontSize: 14, fontWeight: 700,
+                  background: (imageData || aiText.trim()) ? '#1e3a5f' : C.border,
+                  color: (imageData || aiText.trim()) ? '#93c5fd' : C.muted,
+                }}
+              >
+                {analyzing ? 'Analyzing...' : '✨ Analyze Macros'}
+              </button>
+            )}
+
+            {aiError && (
+              <div style={{ background: '#7f1d1d20', border: '1px solid #ef444435', borderRadius: 10, padding: '10px 14px', color: '#fca5a5', fontSize: 13 }}>
+                {aiError}
+              </div>
+            )}
+
+            {/* Analysis result — editable */}
+            {aiResult && (
+              <div style={{ background: '#080b12', border: `1px solid ${C.border}`, borderRadius: 14, padding: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: '#86efac', fontWeight: 600 }}>✨ AI Estimate — edit if needed</div>
+                  <button onClick={() => { setAiResult(null); setAiError('') }}
+                    style={{ background: 'transparent', border: 'none', color: C.muted, fontSize: 12 }}>Re-analyze</button>
+                </div>
+
+                {/* Meal name */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: C.sub, marginBottom: 4 }}>Meal name</div>
+                  <input
+                    value={editedMacros.meal_name}
+                    onChange={e => setEditedMacros(p => ({ ...p, meal_name: e.target.value }))}
+                    style={{ width: '100%', background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 12px', color: C.text, fontSize: 14, fontWeight: 600 }}
+                  />
+                </div>
+
+                {/* Macro fields */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {[['calories', 'Calories (kcal)', C.cal], ['protein', 'Protein (g)', C.protein], ['carbs', 'Carbs (g)', C.carbs], ['fat', 'Fat (g)', C.fat]].map(([k, label, color]) => (
+                    <div key={k}>
+                      <div style={{ fontSize: 11, color, marginBottom: 4, fontWeight: 600 }}>{label}</div>
+                      <input
+                        type="number"
+                        value={editedMacros[k]}
+                        onChange={e => setEditedMacros(p => ({ ...p, [k]: e.target.value }))}
+                        style={{ width: '100%', background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 10px', color: C.text, fontSize: 15, fontWeight: 700 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {aiResult.notes && (
+                  <div style={{ marginTop: 10, fontSize: 11, color: C.muted, fontStyle: 'italic' }}>{aiResult.notes}</div>
+                )}
               </div>
             )}
           </div>
